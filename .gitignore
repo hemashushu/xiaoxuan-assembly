@@ -1,0 +1,10 @@
+/target
+/Cargo.lock
+/TODO
+/DEPRECATED
+
+*.elf
+*.so
+*.so.1
+*.so.1.0.0
+*.a
