@@ -6,11 +6,11 @@
 
 use std::{any::Any, fmt::Display};
 
-use ancvm_types::VMError;
+use anna_types::CompileError;
 
 pub mod ast;
-pub mod instruction_kind;
 pub mod lexer;
+pub mod native_assembly_instruction;
 pub mod parser;
 pub mod peekable_iterator;
 
@@ -35,7 +35,7 @@ impl Display for ParseError {
     }
 }
 
-impl VMError for ParseError {
+impl CompileError for ParseError {
     fn as_any(&self) -> &dyn Any {
         self
     }

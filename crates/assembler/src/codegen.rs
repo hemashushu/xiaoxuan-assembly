@@ -11,7 +11,9 @@ use cranelift_codegen::{
 };
 use cranelift_frontend::FunctionBuilderContext;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{default_libcall_names, DataDescription, Module};
+use cranelift_module::{
+    default_libcall_names, DataDescription, DataId, Linkage, Module, ModuleError,
+};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
 // about the code generator Cranelift:
@@ -28,7 +30,7 @@ pub struct CodeGenerator<T>
 where
     T: Module,
 {
-    pub module: T, //Box<dyn Module>,
+    pub module: T,
     pub context: Context,
     pub function_builder_context: FunctionBuilderContext,
     pub data_description: DataDescription,
@@ -62,6 +64,15 @@ impl CodeGenerator<JITModule> {
         // - speed_and_size: like “speed”, but also perform transformations aimed at reducing code size.
         // https://docs.rs/cranelift-codegen/0.100.0/cranelift_codegen/settings/struct.Flags.html#method.opt_level
         flag_builder.set("opt_level", "none").unwrap();
+
+        // Preserve frame pointers
+        // Preserving frame pointers – even inside leaf functions – makes it easy to capture
+        // the stack of a running program, without requiring any side tables or
+        // metadata (like .eh_frame sections).
+        // Many sampling profilers and similar tools walk frame pointers to capture stacks.
+        // Enabling this option will play nice with those tools.
+        // https://docs.rs/cranelift-codegen/0.100.0/cranelift_codegen/settings/struct.Flags.html#method.preserve_frame_pointers
+        flag_builder.set("preserve_frame_pointers", "true").unwrap();
 
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
             panic!("host machine is not supported: {}", msg);
@@ -103,6 +114,7 @@ impl CodeGenerator<ObjectModule> {
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.enable("is_pic").unwrap();
         flag_builder.set("opt_level", "none").unwrap();
+        flag_builder.set("preserve_frame_pointers", "true").unwrap();
 
         let isa_builder =
             isa::lookup_by_name("x86_64-unknown-linux-gnu").unwrap_or_else(|lookup_error| {
@@ -130,6 +142,51 @@ impl CodeGenerator<ObjectModule> {
     }
 }
 
+impl<T> CodeGenerator<T>
+where
+    T: Module,
+{
+    // https://docs.rs/cranelift-module/latest/cranelift_module/struct.DataDescription.html
+    pub fn define_inited_data(
+        &mut self,
+        name: &str,
+        data: Vec<u8>,
+        align: u64,
+        linkage: Linkage,
+        writable: bool,
+        thread_local: bool,
+    ) -> Result<DataId, ModuleError> {
+        self.data_description.define(data.into_boxed_slice());
+        self.data_description.set_align(align);
+        let data_id = self
+            .module
+            .declare_data(name, linkage, writable, thread_local)?;
+        self.module.define_data(data_id, &self.data_description)?;
+        self.data_description.clear();
+
+        Ok(data_id)
+    }
+
+    pub fn define_uninited_data(
+        &mut self,
+        name: &str,
+        size: usize,
+        align: u64,
+        linkage: Linkage,
+        thread_local: bool,
+    ) -> Result<DataId, ModuleError> {
+        self.data_description.define_zeroinit(size);
+        self.data_description.set_align(align);
+        let data_id = self
+            .module
+            .declare_data(name, linkage, true, thread_local)?;
+        self.module.define_data(data_id, &self.data_description)?;
+        self.data_description.clear();
+
+        Ok(data_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -140,7 +197,7 @@ mod tests {
 
     use cranelift_codegen::ir::{
         types::{self},
-        AbiParam, Function, InstBuilder, UserFuncName,
+        AbiParam, Function, InstBuilder, MemFlags, Type, UserFuncName,
     };
     use cranelift_frontend::FunctionBuilder;
     use cranelift_module::{Linkage, Module};
@@ -151,13 +208,33 @@ mod tests {
     fn test_codegen_jit() {
         let mut generator = CodeGenerator::new_jit();
 
+        // to get the pointer type (i32, i64 etc.):
+        //
+        // ```rust
         // let ptr_t: Type = generator.module.isa().pointer_type();
-
+        // ```
+        //
+        // to create a signature:
+        //
+        // ```rust
         // let sig_main = Signature {
         //     params: vec![],
         //     returns: vec![AbiParam::new(types::I32)],
         //     call_conv: CallConv::SystemV,
         // };
+        // ```
+        //
+        // about the calling convention:
+        // https://docs.rs/cranelift-codegen/0.102.1/cranelift_codegen/ir/struct.Signature.html
+        // https://docs.rs/cranelift-codegen/0.102.1/cranelift_codegen/isa/enum.CallConv.html
+        //
+        //
+        // Name	Description
+        // ----------------
+        // fast         not-ABI-stable convention for best performance
+        // cold         not-ABI-stable convention for infrequently executed code
+        // system_v     System V-style convention used on many platforms
+        // fastcall     Windows "fastcall" convention, also used for x64 and ARM
 
         let mut sig_main = generator.module.make_signature();
         sig_main.returns.push(AbiParam::new(types::I32));
@@ -167,6 +244,9 @@ mod tests {
             .module
             .declare_function("main", Linkage::Export, &sig_main)
             .unwrap();
+
+        // about the 'declare_function':
+        // https://docs.rs/cranelift-module/0.102.1/cranelift_module/trait.Module.html#tymethod.declare_function
 
         {
             let mut func = Function::with_name_signature(
@@ -183,11 +263,14 @@ mod tests {
             func_builder.append_block_params_for_function_params(block);
             func_builder.switch_to_block(block);
 
+            // return const 11
             let value_0 = func_builder.ins().iconst(types::I32, 11);
             func_builder.ins().return_(&[value_0]);
 
             func_builder.seal_all_blocks();
             func_builder.finalize();
+
+            // generate the function code
 
             generator.context.func = func;
 
@@ -199,7 +282,7 @@ mod tests {
             generator.module.clear_context(&mut generator.context);
         }
 
-        // linking
+        // finish the module
         generator.module.finalize_definitions().unwrap();
 
         // get function pointers
@@ -239,11 +322,14 @@ mod tests {
             func_builder.append_block_params_for_function_params(block);
             func_builder.switch_to_block(block);
 
+            // return const 11
             let value_0 = func_builder.ins().iconst(types::I32, 11);
             func_builder.ins().return_(&[value_0]);
 
             func_builder.seal_all_blocks();
             func_builder.finalize();
+
+            // generate the function code
 
             generator.context.func = func;
 
@@ -258,26 +344,27 @@ mod tests {
         // ObjectProduct:
         // https://docs.rs/cranelift-object/latest/cranelift_object/struct.ObjectProduct.html
 
+        // finish the module
         let object_procduct = generator.module.finish();
         let module_binary = object_procduct.emit().unwrap();
-        // println!("{:?}", module_binary);
 
+        // write object file
         let object_file_path = get_temp_file_path("anna_code_gen_unit_test0.o");
-        let exec_file_path = get_temp_file_path("anna_code_gen_unit_test0.elf");
-
         let mut file = File::create(&object_file_path).unwrap();
         file.write_all(&module_binary).unwrap();
 
         // link file
+        let exec_file_path = get_temp_file_path("anna_code_gen_unit_test0.elf");
         link_object_file(&object_file_path, &exec_file_path).unwrap();
 
-        // Run the object file and get the exit code
+        // Run the executable file and get the exit code
         // `$ ./anna.elf`
         // `$ echo $?`
-        let exit_code_opt = run_and_get_exit_code(&exec_file_path);
+        let exit_code_opt = run_executable_file_and_get_exit_code(&exec_file_path);
 
         assert_eq!(exit_code_opt, Some(11));
 
+        // clean up
         delete_file(&object_file_path);
         delete_file(&exec_file_path);
     }
@@ -290,6 +377,7 @@ mod tests {
 
     fn link_object_file(object_file: &str, output_file: &str) -> std::io::Result<ExitStatus> {
         // link the object file with GCC:
+        //
         // `$ gcc -o anna.elf anna.o`
         //
         // link the object file with binutils 'ld':
@@ -298,7 +386,7 @@ mod tests {
         // ld \
         //     -dynamic-linker /lib64/ld-linux-x86-64.so.2 \
         //     -pie \
-        //     -o anna.man_ld.elf \
+        //     -o anna.elf \
         //     /usr/lib/Scrt1.o \
         //     /usr/lib/crti.o \
         //     -L/lib/ \
@@ -308,7 +396,7 @@ mod tests {
         //     /usr/lib/crtn.o
         // ```
         //
-        // reference: the result of command `$ gcc -v -o anna.ld.elf anna.o`
+        // reference: the result of command `$ gcc -v -o anna.elf anna.o`
 
         // Mini FAQ about the misc libc/gcc crt files.
         // https://dev.gentoo.org/~vapier/crt.txt
@@ -407,15 +495,202 @@ mod tests {
             .arg(object_file)
             .arg("-lc")
             .arg("/usr/lib/crtn.o")
-            .status() // .spawn()
-                      // .unwrap();
+            .status()
     }
 
-    fn run_and_get_exit_code(exec_file: &str) -> Option<i32> {
+    fn run_executable_file_and_get_exit_code(exec_file: &str) -> Option<i32> {
         Command::new(exec_file).status().unwrap().code()
     }
 
     fn delete_file(filepath: &str) {
         std::fs::remove_file(filepath).unwrap();
+    }
+
+    #[test]
+    fn test_codegen_function_call() {
+        let mut generator = CodeGenerator::new_jit();
+
+        let mut sig_swap = generator.module.make_signature();
+        sig_swap.params.push(AbiParam::new(types::I32));
+        sig_swap.params.push(AbiParam::new(types::I32));
+        sig_swap.returns.push(AbiParam::new(types::I32));
+
+        let func_swap_id = generator
+            .module
+            .declare_function("swap", Linkage::Export, &sig_swap)
+            .unwrap();
+
+        {
+            let mut func = Function::with_name_signature(
+                UserFuncName::user(0, func_main_id.as_u32()),
+                sig_main,
+            );
+
+            let mut func_builder: FunctionBuilder = FunctionBuilder::new(
+                // &mut generator.context.func,
+                &mut func,
+                &mut generator.function_builder_context,
+            );
+            let block = func_builder.create_block();
+            func_builder.append_block_params_for_function_params(block);
+            func_builder.switch_to_block(block);
+
+            // return const 11
+            let value_0 = func_builder.ins().iconst(types::I32, 11);
+            func_builder.ins().return_(&[value_0]);
+
+            func_builder.seal_all_blocks();
+            func_builder.finalize();
+
+            // generate the function code
+
+            generator.context.func = func;
+
+            generator
+                .module
+                .define_function(func_main_id, &mut generator.context)
+                .unwrap();
+
+            generator.module.clear_context(&mut generator.context);
+        }
+
+        // -------------------------
+
+        let mut sig_main = generator.module.make_signature();
+        sig_main.returns.push(AbiParam::new(types::I32));
+
+        // the function 'main' should be 'export', so the linker can find it.
+        let func_main_id = generator
+            .module
+            .declare_function("main", Linkage::Export, &sig_main)
+            .unwrap();
+
+        {
+            let mut func = Function::with_name_signature(
+                UserFuncName::user(0, func_main_id.as_u32()),
+                sig_main,
+            );
+
+            let mut func_builder: FunctionBuilder = FunctionBuilder::new(
+                // &mut generator.context.func,
+                &mut func,
+                &mut generator.function_builder_context,
+            );
+            let block = func_builder.create_block();
+            func_builder.append_block_params_for_function_params(block);
+            func_builder.switch_to_block(block);
+
+            // return const 11
+            let value_0 = func_builder.ins().iconst(types::I32, 11);
+            func_builder.ins().return_(&[value_0]);
+
+            func_builder.seal_all_blocks();
+            func_builder.finalize();
+
+            // generate the function code
+
+            generator.context.func = func;
+
+            generator
+                .module
+                .define_function(func_main_id, &mut generator.context)
+                .unwrap();
+
+            generator.module.clear_context(&mut generator.context);
+        }
+
+        // finish the module
+        generator.module.finalize_definitions().unwrap();
+
+        // get function pointers
+        let func_main_ptr = generator.module.get_finalized_function(func_main_id);
+
+        // cast ptr to Rust function
+        let func_main: extern "C" fn() -> i32 = unsafe { std::mem::transmute(func_main_ptr) };
+
+        assert_eq!(func_main(), 11);
+    }
+
+
+    #[test]
+    fn test_codegen_define_data() {
+        let mut generator = CodeGenerator::new_jit();
+
+        let ptr_t: Type = generator.module.isa().pointer_type();
+
+        // define data
+        let d0 = 13u32.to_le_bytes().to_vec();
+        let d0_id = generator
+            .define_inited_data("exit_code", d0, 4, Linkage::Local, false, false)
+            .unwrap();
+
+        // define function
+        let mut sig_main = generator.module.make_signature();
+        sig_main.returns.push(AbiParam::new(types::I32));
+
+        // the function 'main' should be 'export', so the linker can find it.
+        let func_main_id = generator
+            .module
+            .declare_function("main", Linkage::Export, &sig_main)
+            .unwrap();
+
+        {
+            let mut func = Function::with_name_signature(
+                UserFuncName::user(0, func_main_id.as_u32()),
+                sig_main,
+            );
+
+            let gv_d0 = generator.module.declare_data_in_func(d0_id, &mut func);
+
+            let mut func_builder: FunctionBuilder = FunctionBuilder::new(
+                // &mut generator.context.func,
+                &mut func,
+                &mut generator.function_builder_context,
+            );
+            let block = func_builder.create_block();
+            func_builder.append_block_params_for_function_params(block);
+            func_builder.switch_to_block(block);
+
+            let value_0_ptr = func_builder.ins().symbol_value(ptr_t, gv_d0);
+            let value_0 = func_builder
+                .ins()
+                .load(types::I32, MemFlags::new(), value_0_ptr, 0);
+
+            func_builder.ins().return_(&[value_0]);
+
+            func_builder.seal_all_blocks();
+            func_builder.finalize();
+
+            // println!("{}", func.display());
+
+            generator.context.func = func;
+
+            generator
+                .module
+                .define_function(func_main_id, &mut generator.context)
+                .unwrap();
+
+            generator.module.clear_context(&mut generator.context);
+        }
+
+        // linking
+        generator.module.finalize_definitions().unwrap();
+
+        // get function pointers
+        let func_main_ptr = generator.module.get_finalized_function(func_main_id);
+
+        // example of to get data pointer
+        //
+        // ```rust
+        // let (buf_ptr, buf_size) = generator.module.get_finalized_data(data_id);
+        // let buf = unsafe { std::slice::from_raw_parts(buf_ptr, buf_size) };
+        // ```
+        //
+        // note that the pointers of functions and data only available after 'module.finalize_definitions()'
+
+        // cast ptr to Rust function
+        let func_main: extern "C" fn() -> i32 = unsafe { std::mem::transmute(func_main_ptr) };
+
+        assert_eq!(func_main(), 13);
     }
 }

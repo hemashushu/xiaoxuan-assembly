@@ -21,6 +21,7 @@ pub enum Token {
 pub enum NumberToken {
     Decimal(String),
     Hex(String),
+    HexFloat(String),
     Binary(String),
 }
 
@@ -48,7 +49,7 @@ pub fn lex(iter: &mut PeekableIterator<char>) -> Result<Vec<Token>, ParseError> 
             '0'..='9' | '+' | '-' => {
                 tokens.push(lex_number(iter)?);
             }
-            'd' if iter.look_ahead_equals(1, &'"') => {
+            'h' if iter.look_ahead_equals(1, &'"') => {
                 tokens.push(lex_bytes_data(iter)?);
             }
             'r' if iter.look_ahead_equals(1, &'"') => {
@@ -164,33 +165,42 @@ fn lex_number(iter: &mut PeekableIterator<char>) -> Result<Token, ParseError> {
     // 0xaabb
     // 0b1100
 
-    if let Some('0') = iter.peek(0) {
-        if iter.look_ahead_equals(1, &'b') {
-            // '0b...'
-            return lex_number_binary(iter);
-        } else if iter.look_ahead_equals(1, &'x') {
-            // '0x...'
-            return lex_number_hex(iter);
-        }
+    if let Some('+') = iter.peek(0) {
+        // consume the plugs sign '+'
+        iter.next();
     }
 
-    lex_number_decimal(iter)
+    let is_neg = if let Some('-') = iter.peek(0) {
+        // consume the minus sign '-'
+        iter.next();
+        true
+    } else {
+        false
+    };
+
+    if iter.look_ahead_equals(0, &'0') && iter.look_ahead_equals(1, &'b') {
+        // '0b...'
+        lex_number_binary(iter, is_neg)
+    } else if iter.look_ahead_equals(0, &'0') && iter.look_ahead_equals(1, &'x') {
+        // '0x...'
+        lex_number_hex(iter, is_neg)
+    } else {
+        lex_number_decimal(iter, is_neg)
+    }
 }
 
-fn lex_number_decimal(iter: &mut PeekableIterator<char>) -> Result<Token, ParseError> {
+fn lex_number_decimal(
+    iter: &mut PeekableIterator<char>,
+    is_neg: bool,
+) -> Result<Token, ParseError> {
     // 123456T  //
     // ^     ^__// to here
     // |________// current char
 
     let mut num_string = String::new();
 
-    if let Some('+') = iter.peek(0) {
-        // skip the plugs sign '+'
-        iter.next();
-    } else if let Some('-') = iter.peek(0) {
-        // keep the minus sign '-'
+    if is_neg {
         num_string.push('-');
-        iter.next();
     }
 
     let mut found_point = false;
@@ -235,7 +245,7 @@ fn lex_number_decimal(iter: &mut PeekableIterator<char>) -> Result<Token, ParseE
     Ok(Token::Number(NumberToken::Decimal(num_string)))
 }
 
-fn lex_number_binary(iter: &mut PeekableIterator<char>) -> Result<Token, ParseError> {
+fn lex_number_binary(iter: &mut PeekableIterator<char>, is_neg: bool) -> Result<Token, ParseError> {
     // 0b1010T  //
     // ^     ^__// to here
     // |________// current char
@@ -245,6 +255,10 @@ fn lex_number_binary(iter: &mut PeekableIterator<char>) -> Result<Token, ParseEr
     iter.next();
 
     let mut num_string = String::new();
+
+    if is_neg {
+        num_string.push('-');
+    }
 
     while let Some(current_char) = iter.peek(0) {
         match *current_char {
@@ -273,7 +287,7 @@ fn lex_number_binary(iter: &mut PeekableIterator<char>) -> Result<Token, ParseEr
     }
 }
 
-fn lex_number_hex(iter: &mut PeekableIterator<char>) -> Result<Token, ParseError> {
+fn lex_number_hex(iter: &mut PeekableIterator<char>, is_neg: bool) -> Result<Token, ParseError> {
     // 0xaabbT  //
     // ^     ^__// to here
     // |________// current char
@@ -282,12 +296,23 @@ fn lex_number_hex(iter: &mut PeekableIterator<char>) -> Result<Token, ParseError
     iter.next();
     iter.next();
 
+    let mut is_floating_point_number: bool = false;
     let mut num_string = String::new();
 
     while let Some(current_char) = iter.peek(0) {
         match *current_char {
             '0'..='9' | 'a'..='f' | 'A'..='F' | '_' => {
                 // valid digits for hex number
+                num_string.push(*current_char);
+                iter.next();
+            }
+            '.' | 'p' => {
+                // it is hex floating point literal
+                is_floating_point_number = true;
+                num_string.push(*current_char);
+                iter.next();
+            }
+            '+' | '-' if is_floating_point_number => {
                 num_string.push(*current_char);
                 iter.next();
             }
@@ -307,7 +332,19 @@ fn lex_number_hex(iter: &mut PeekableIterator<char>) -> Result<Token, ParseError
     if num_string.is_empty() {
         Err(ParseError::new("Incomplete hex number"))
     } else {
-        Ok(Token::Number(NumberToken::Hex(num_string)))
+        Ok(Token::Number(if is_floating_point_number {
+            if is_neg {
+                NumberToken::HexFloat(format!("-0x{}", num_string))
+            } else {
+                NumberToken::HexFloat(format!("0x{}", num_string))
+            }
+        } else {
+            if is_neg {
+                NumberToken::Hex(format!("-{}", num_string))
+            } else {
+                NumberToken::Hex(num_string)
+            }
+        }))
     }
 }
 
@@ -620,14 +657,14 @@ fn lex_paragraph_string(iter: &mut PeekableIterator<char>) -> Result<Token, Pars
 }
 
 fn lex_bytes_data(iter: &mut PeekableIterator<char>) -> Result<Token, ParseError> {
-    // b"0011aabb"?  //
+    // h"0011aabb"?  //
     // ^          ^__// to here
     // |_____________// current char
 
     let mut bytes: Vec<u8> = Vec::new();
     let mut byte_buf = String::with_capacity(2);
 
-    iter.next(); // consume char 'b'
+    iter.next(); // consume char 'h'
     iter.next(); // consume quote '"'
 
     loop {
@@ -817,6 +854,10 @@ impl Token {
         Token::Number(NumberToken::Hex(s.to_owned()))
     }
 
+    pub fn new_hex_float_number(s: &str) -> Self {
+        Token::Number(NumberToken::HexFloat(s.to_owned()))
+    }
+
     pub fn new_bin_number(s: &str) -> Self {
         Token::Number(NumberToken::Binary(s.to_owned()))
     }
@@ -966,6 +1007,18 @@ mod tests {
             vec![Token::new_dec_number("6.626e-34")]
         );
 
+        //3.1415927f32
+        assert_eq!(
+            lex_from_str("0x1.921fb6p1").unwrap(),
+            vec![Token::new_hex_float_number("0x1.921fb6p1")]
+        );
+
+        // 2.718281828459045f64
+        assert_eq!(
+            lex_from_str("0x1.5bf0a8b145769p+1").unwrap(),
+            vec![Token::new_hex_float_number("0x1.5bf0a8b145769p+1")]
+        );
+
         assert_eq!(
             lex_from_str("+2017").unwrap(),
             vec![Token::new_dec_number("2017")]
@@ -1003,6 +1056,21 @@ mod tests {
                 Token::new_hex_number("11"),
                 Token::new_bin_number("11")
             ]
+        );
+
+        assert_eq!(
+            lex_from_str("-0xaabb").unwrap(),
+            vec![Token::new_hex_number("-aabb")]
+        );
+
+        assert_eq!(
+            lex_from_str("-0b1010").unwrap(),
+            vec![Token::new_bin_number("-1010")]
+        );
+
+        assert_eq!(
+            lex_from_str("-0x1.921fb6p1").unwrap(),
+            vec![Token::new_hex_float_number("-0x1.921fb6p1")]
         );
 
         // invalid char for decimal number
@@ -1044,24 +1112,6 @@ mod tests {
         // invalid char for binary number
         assert!(matches!(
             lex_from_str("0b1234"),
-            Err(ParseError { message: _ })
-        ));
-
-        // neg hex number
-        assert!(matches!(
-            lex_from_str("-0xaabb"),
-            Err(ParseError { message: _ })
-        ));
-
-        // unsupported hex number expression
-        assert!(matches!(
-            lex_from_str("0xee_ff.1122"),
-            Err(ParseError { message: _ })
-        ));
-
-        // neg binary number
-        assert!(matches!(
-            lex_from_str("-0b1010"),
             Err(ParseError { message: _ })
         ));
 
@@ -1366,7 +1416,7 @@ mod tests {
         assert_eq!(
             lex_from_str(
                 r#"
-            d""
+            h""
             "#
             )
             .unwrap(),
@@ -1376,7 +1426,7 @@ mod tests {
         assert_eq!(
             lex_from_str(
                 r#"
-            d"11131719"
+            h"11131719"
             "#
             )
             .unwrap(),
@@ -1386,7 +1436,7 @@ mod tests {
         assert_eq!(
             lex_from_str(
                 r#"
-            d"11 13 1719"
+            h"11 13 1719"
             "#
             )
             .unwrap(),
@@ -1396,7 +1446,7 @@ mod tests {
         assert_eq!(
             lex_from_str(
                 r#"
-            d"11-13-1719"
+            h"11-13-1719"
             "#
             )
             .unwrap(),
@@ -1406,7 +1456,7 @@ mod tests {
         assert_eq!(
             lex_from_str(
                 r#"
-            d"11:13:1719"
+            h"11:13:1719"
             "#
             )
             .unwrap(),
@@ -1416,7 +1466,7 @@ mod tests {
         assert_eq!(
             lex_from_str(
                 "
-            d\"1113\n17\t19\"
+            h\"1113\n17\t19\"
             "
             )
             .unwrap(),
@@ -1427,7 +1477,7 @@ mod tests {
         assert!(matches!(
             lex_from_str(
                 r#"
-            d"1113171"
+            h"1113171"
             "#
             ),
             Err(ParseError { message: _ })
@@ -1437,7 +1487,7 @@ mod tests {
         assert!(matches!(
             lex_from_str(
                 r#"
-            d"1113171z"
+            h"1113171z"
             "#
             ),
             Err(ParseError { message: _ })
@@ -1447,7 +1497,7 @@ mod tests {
         assert!(matches!(
             lex_from_str(
                 r#"
-            d"11131719
+            h"11131719
             "#
             ),
             Err(ParseError { message: _ })
