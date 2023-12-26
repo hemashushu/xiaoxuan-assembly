@@ -45,12 +45,12 @@
  * - https://www.geeksforgeeks.org/storage-classes-in-c/
  */
 
-__thread int thread_var = 0;
+__thread int tls_var = 0;
 int normal_var = 0;
 
 void inc_normal(int num)
 {
-    thread_var += num;
+    tls_var += num;
     normal_var += num;
 }
 
@@ -58,8 +58,8 @@ static void *inc_tls_internal(void *arg)
 {
     pthread_t tid = pthread_self();
     int num = *((int *)arg);
-    thread_var += num;
-    printf("child thread created: %ld, inc: %d, tls var: %d\n", tid, num, thread_var);
+    tls_var += num;
+    printf("child thread created: %ld, inc: %d, tls var: %d\n", tid, num, tls_var);
     pthread_exit(NULL);
 }
 
@@ -72,7 +72,7 @@ void inc_tls(int num)
 
 int get_tls_var()
 {
-    return thread_var;
+    return tls_var;
 }
 
 int get_normal_var()

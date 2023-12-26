@@ -14,7 +14,7 @@
 
 extern void inc_tls(int);
 extern int get_tls_var();
-extern __thread int thread_var;
+extern __thread int tls_var;
 
 void sleep_100ms()
 {
@@ -28,17 +28,17 @@ void *child_thread_start(void *arg)
 {
     pthread_t tid = pthread_self();
 
-    printf("%ld >> init: %d\n", tid, thread_var);
+    printf("%ld >> init: %d\n", tid, tls_var);
     printf("%ld >> init (from lib): %d\n", tid, get_tls_var());
     sleep_100ms();
 
     inc_tls(11);
-    printf("%ld >> after inc: %d\n", tid, thread_var);
+    printf("%ld >> after inc: %d\n", tid, tls_var);
     printf("%ld >> after inc (from lib): %d\n", tid, get_tls_var());
     sleep_100ms();
 
-    thread_var = 13;
-    printf("%ld >> after set: %d\n", tid, thread_var);
+    tls_var = 13;
+    printf("%ld >> after set: %d\n", tid, tls_var);
     printf("%ld >> after set (from lib): %d\n", tid, get_tls_var());
     sleep_100ms();
 
@@ -63,15 +63,15 @@ void test_threads(void)
 
 void test_single_thread(void)
 {
-    printf("init: %d\n", thread_var);
+    printf("init: %d\n", tls_var);
     printf("init (from lib): %d\n", get_tls_var());
 
     inc_tls(11);
-    printf("after inc: %d\n", thread_var);
+    printf("after inc: %d\n", tls_var);
     printf("after inc (from lib): %d\n", get_tls_var());
 
-    thread_var = 13;
-    printf("after set: %d\n", thread_var);
+    tls_var = 13;
+    printf("after set: %d\n", tls_var);
     printf("after set (from lib): %d\n", get_tls_var());
 }
 

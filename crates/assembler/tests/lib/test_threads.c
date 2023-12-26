@@ -11,7 +11,7 @@
 #include <pthread.h>
 
 extern int normal_var;
-extern __thread int thread_var;
+extern __thread int tls_var;
 
 void *test_thread_start(void *arg)
 {
@@ -19,9 +19,9 @@ void *test_thread_start(void *arg)
 
     for (int i = 0; i < 3; i++)
     {
-        thread_var++;
+        tls_var++;
         normal_var++;
-        printf("%ld >> tls var: %d, normal var:%d\n", tid, thread_var, normal_var);
+        printf("%ld >> tls var: %d, normal var:%d\n", tid, tls_var, normal_var);
     }
 
     pthread_exit(NULL);
