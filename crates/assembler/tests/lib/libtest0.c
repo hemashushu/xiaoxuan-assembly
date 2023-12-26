@@ -80,6 +80,16 @@ int get_normal_var()
     return normal_var;
 }
 
+int add(int left, int right)
+{
+    return left + right;
+}
+
+void *get_func_addr()
+{
+    return add;
+}
+
 // compile this file with the command:
 // `$ gcc -Wall -g -fpic -shared -Wl,-soname,libtest0.so.1 -o libtest0.so.1.0.0 libtest0.c`
 //

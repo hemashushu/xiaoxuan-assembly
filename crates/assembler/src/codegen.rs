@@ -196,6 +196,7 @@ mod tests {
     };
 
     use cranelift_codegen::ir::{
+        condcodes::IntCC,
         types::{self},
         AbiParam, Function, InstBuilder, MemFlags, Type, UserFuncName,
     };
@@ -211,7 +212,7 @@ mod tests {
         // to get the pointer type (i32, i64 etc.):
         //
         // ```rust
-        // let ptr_t: Type = generator.module.isa().pointer_type();
+        // let addr_t: Type = generator.module.isa().pointer_type();
         // ```
         //
         // to create a signature:
@@ -296,7 +297,7 @@ mod tests {
 
     #[test]
     fn test_codegen_object_file() {
-        let mut generator = CodeGenerator::new_object_file("foo");
+        let mut generator = CodeGenerator::new_object_file("main");
 
         let mut sig_main = generator.module.make_signature();
         sig_main.returns.push(AbiParam::new(types::I32));
@@ -347,26 +348,12 @@ mod tests {
         // finish the module
         let object_procduct = generator.module.finish();
         let module_binary = object_procduct.emit().unwrap();
-
-        // write object file
-        let object_file_path = get_temp_file_path("anna_code_gen_unit_test0.o");
-        let mut file = File::create(&object_file_path).unwrap();
-        file.write_all(&module_binary).unwrap();
-
-        // link file
-        let exec_file_path = get_temp_file_path("anna_code_gen_unit_test0.elf");
-        link_object_file(&object_file_path, &exec_file_path).unwrap();
-
-        // Run the executable file and get the exit code
-        // `$ ./anna.elf`
-        // `$ echo $?`
-        let exit_code_opt = run_executable_file_and_get_exit_code(&exec_file_path);
+        let exit_code_opt = run_executable_binary_and_get_exit_code(
+            &module_binary,
+            "anna_unit_test_codegen_object_file",
+        );
 
         assert_eq!(exit_code_opt, Some(11));
-
-        // clean up
-        delete_file(&object_file_path);
-        delete_file(&exec_file_path);
     }
 
     fn get_temp_file_path(filename: &str) -> String {
@@ -375,7 +362,12 @@ mod tests {
         dir.to_str().unwrap().to_owned()
     }
 
-    fn link_object_file(object_file: &str, output_file: &str) -> std::io::Result<ExitStatus> {
+    fn link_object_file(
+        object_file: &str,
+        lib_path: Option<&str>,
+        lib_soname: Option<&str>,
+        output_file: &str,
+    ) -> std::io::Result<ExitStatus> {
         // link the object file with GCC:
         //
         // `$ gcc -o anna.elf anna.o`
@@ -482,48 +474,101 @@ mod tests {
         // `$ pacman -Qo Scrt1.o`
         // `$ pacman -Ql glibc | grep crt`
 
-        Command::new("/usr/bin/ld")
-            .arg("--dynamic-linker")
-            .arg("/lib64/ld-linux-x86-64.so.2")
-            .arg("-pie")
-            .arg("-o")
-            .arg(output_file)
-            .arg("/usr/lib/Scrt1.o")
-            .arg("/usr/lib/crti.o")
-            .arg("-L/lib/")
-            .arg("-L/usr/lib")
-            .arg(object_file)
-            .arg("-lc")
-            .arg("/usr/lib/crtn.o")
-            .status()
-    }
+        let mut args = vec![];
 
-    fn run_executable_file_and_get_exit_code(exec_file: &str) -> Option<i32> {
-        Command::new(exec_file).status().unwrap().code()
+        args.push("--dynamic-linker");
+        args.push("/lib64/ld-linux-x86-64.so.2");
+        args.push("-pie");
+        args.push("-o");
+        args.push(output_file);
+        args.push("/usr/lib/Scrt1.o");
+        args.push("/usr/lib/crti.o");
+        args.push("-L/lib/");
+        args.push("-L/usr/lib");
+
+        if let Some(lib_path_str) = lib_path {
+            args.push("-L");
+            args.push(lib_path_str);
+        }
+
+        args.push(object_file);
+
+        if let Some(lib_soname_str) = lib_soname {
+            args.push("-l");
+            args.push(lib_soname_str);
+        }
+
+        args.push("-lc");
+        args.push("/usr/lib/crtn.o");
+
+        Command::new("/usr/bin/ld").args(args).status()
     }
 
     fn delete_file(filepath: &str) {
         std::fs::remove_file(filepath).unwrap();
     }
 
+    fn get_userlib_path() -> String {
+        let mut pwd = std::env::current_dir().unwrap();
+
+        if !pwd.ends_with("assembler") {
+            // in the VSCode editor `Debug` environment, the `current_dir()` returns
+            // the project's root folder.
+            // while in both `$ cargo test` and VSCode editor `Run Test` environment,
+            // the `current_dir()` returns the current crate path.
+            // here canonicalize the test resources path.
+            pwd.push("crates");
+            pwd.push("assembler");
+        }
+
+        pwd.push("tests");
+        pwd.push("lib");
+        pwd.to_str().unwrap().to_string()
+    }
+
+    fn run_executable_binary_and_get_exit_code(module_binary: &[u8], name: &str) -> Option<i32> {
+        // write object file
+        let object_file_path = get_temp_file_path(&format!("{}.o", name));
+        let mut file = File::create(&object_file_path).unwrap();
+        file.write_all(&module_binary).unwrap();
+
+        // link file
+        let exec_file_path = get_temp_file_path(&format!("{}.elf", name));
+        link_object_file(&object_file_path, None, None, &exec_file_path).unwrap();
+
+        // Run the executable file and get the exit code
+        // `$ ./anna.elf`
+        // `$ echo $?`
+
+        // run executable file and get exit code
+        let exit_code_opt = Command::new(&exec_file_path).status().unwrap().code();
+
+        // clean up
+        delete_file(&object_file_path);
+        delete_file(&exec_file_path);
+
+        exit_code_opt
+    }
+
     #[test]
     fn test_codegen_function_call() {
-        let mut generator = CodeGenerator::new_jit();
+        let mut generator = CodeGenerator::new_object_file("main");
 
         let mut sig_swap = generator.module.make_signature();
         sig_swap.params.push(AbiParam::new(types::I32));
         sig_swap.params.push(AbiParam::new(types::I32));
         sig_swap.returns.push(AbiParam::new(types::I32));
+        sig_swap.returns.push(AbiParam::new(types::I32));
 
         let func_swap_id = generator
             .module
-            .declare_function("swap", Linkage::Export, &sig_swap)
+            .declare_function("swap", Linkage::Local, &sig_swap)
             .unwrap();
 
         {
             let mut func = Function::with_name_signature(
-                UserFuncName::user(0, func_main_id.as_u32()),
-                sig_main,
+                UserFuncName::user(0, func_swap_id.as_u32()),
+                sig_swap,
             );
 
             let mut func_builder: FunctionBuilder = FunctionBuilder::new(
@@ -535,9 +580,11 @@ mod tests {
             func_builder.append_block_params_for_function_params(block);
             func_builder.switch_to_block(block);
 
-            // return const 11
-            let value_0 = func_builder.ins().iconst(types::I32, 11);
-            func_builder.ins().return_(&[value_0]);
+            let value_a = func_builder.block_params(block)[0];
+            let value_b = func_builder.block_params(block)[1];
+
+            // return (b, a)
+            func_builder.ins().return_(&[value_b, value_a]);
 
             func_builder.seal_all_blocks();
             func_builder.finalize();
@@ -548,13 +595,11 @@ mod tests {
 
             generator
                 .module
-                .define_function(func_main_id, &mut generator.context)
+                .define_function(func_swap_id, &mut generator.context)
                 .unwrap();
 
             generator.module.clear_context(&mut generator.context);
         }
-
-        // -------------------------
 
         let mut sig_main = generator.module.make_signature();
         sig_main.returns.push(AbiParam::new(types::I32));
@@ -571,21 +616,87 @@ mod tests {
                 sig_main,
             );
 
+            let func_ref0 = generator
+                .module
+                .declare_func_in_func(func_swap_id, &mut func);
+
             let mut func_builder: FunctionBuilder = FunctionBuilder::new(
                 // &mut generator.context.func,
                 &mut func,
                 &mut generator.function_builder_context,
             );
-            let block = func_builder.create_block();
-            func_builder.append_block_params_for_function_params(block);
-            func_builder.switch_to_block(block);
 
-            // return const 11
+            // ()                                 (i32)
+            // start ---> check0 ---> check1 ---> exit
+            //                    |           ^
+            //                    \-----------/
+
+            let block_start = func_builder.create_block();
+            func_builder.append_block_params_for_function_params(block_start);
+
+            let block_check0 = func_builder.create_block();
+            let block_check1 = func_builder.create_block();
+
+            let block_exit = func_builder.create_block();
+            func_builder.append_block_params_for_function_returns(block_exit);
+
+            // build block_start
+            func_builder.switch_to_block(block_start);
+
+            // call swap(11, 13) -> (13, 11)
             let value_0 = func_builder.ins().iconst(types::I32, 11);
-            func_builder.ins().return_(&[value_0]);
+            let value_1 = func_builder.ins().iconst(types::I32, 13);
 
+            let call0 = func_builder.ins().call(func_ref0, &[value_0, value_1]);
+            let call0_results = func_builder.inst_results(call0).to_vec();
+            func_builder.ins().jump(block_check0, &[]);
+
+            // build block_check0
+            func_builder.switch_to_block(block_check0);
+
+            // check results 1/2
+            let check_result_0 = func_builder
+                .ins()
+                .icmp_imm(IntCC::Equal, call0_results[0], 13);
+            let exit_code_imm_1 = func_builder.ins().iconst(types::I32, 1);
+
+            func_builder.ins().brif(
+                check_result_0,
+                block_check1,
+                &[],
+                block_exit,
+                &[exit_code_imm_1],
+            );
+
+            // build block_check1
+            func_builder.switch_to_block(block_check1);
+
+            // check results 2/2
+            let check_result_1 = func_builder
+                .ins()
+                .icmp_imm(IntCC::Equal, call0_results[1], 11);
+            let exit_code_imm_2 = func_builder.ins().iconst(types::I32, 2);
+            let exit_code_imm_0 = func_builder.ins().iconst(types::I32, 0);
+
+            func_builder.ins().brif(
+                check_result_1,
+                block_exit,
+                &[exit_code_imm_0],
+                block_exit,
+                &[exit_code_imm_2],
+            );
+
+            // build block_exit
+            func_builder.switch_to_block(block_exit);
+
+            let exit_code_value = func_builder.block_params(block_exit)[0];
+            func_builder.ins().return_(&[exit_code_value]);
+
+            // all blocks are finish
             func_builder.seal_all_blocks();
             func_builder.finalize();
+
+            // println!("{}", func.display());
 
             // generate the function code
 
@@ -600,28 +711,32 @@ mod tests {
         }
 
         // finish the module
-        generator.module.finalize_definitions().unwrap();
+        let object_procduct = generator.module.finish();
+        let module_binary = object_procduct.emit().unwrap();
+        let exit_code_opt = run_executable_binary_and_get_exit_code(
+            &module_binary,
+            "anna_unit_test_codegen_function_call",
+        );
 
-        // get function pointers
-        let func_main_ptr = generator.module.get_finalized_function(func_main_id);
-
-        // cast ptr to Rust function
-        let func_main: extern "C" fn() -> i32 = unsafe { std::mem::transmute(func_main_ptr) };
-
-        assert_eq!(func_main(), 11);
+        assert_eq!(exit_code_opt, Some(0));
     }
 
-
     #[test]
-    fn test_codegen_define_data() {
-        let mut generator = CodeGenerator::new_jit();
+    fn test_codegen_data() {
+        let mut generator = CodeGenerator::new_object_file("main");
 
-        let ptr_t: Type = generator.module.isa().pointer_type();
+        let addr_t: Type = generator.module.isa().pointer_type();
 
-        // define data
-        let d0 = 13u32.to_le_bytes().to_vec();
-        let d0_id = generator
-            .define_inited_data("exit_code", d0, 4, Linkage::Local, false, false)
+        // define read-only data
+        let data_ro_content = 11u32.to_le_bytes().to_vec();
+        let data_ro_id = generator
+            .define_inited_data("number0", data_ro_content, 4, Linkage::Local, false, false)
+            .unwrap();
+
+        // define read-write data
+        let data_rw_content = 13u32.to_le_bytes().to_vec();
+        let data_rw_id = generator
+            .define_inited_data("number1", data_rw_content, 4, Linkage::Local, true, false)
             .unwrap();
 
         // define function
@@ -640,28 +755,105 @@ mod tests {
                 sig_main,
             );
 
-            let gv_d0 = generator.module.declare_data_in_func(d0_id, &mut func);
+            let gv_data_ro = generator.module.declare_data_in_func(data_ro_id, &mut func);
+            let gv_data_rw = generator.module.declare_data_in_func(data_rw_id, &mut func);
 
             let mut func_builder: FunctionBuilder = FunctionBuilder::new(
                 // &mut generator.context.func,
                 &mut func,
                 &mut generator.function_builder_context,
             );
-            let block = func_builder.create_block();
-            func_builder.append_block_params_for_function_params(block);
-            func_builder.switch_to_block(block);
 
-            let value_0_ptr = func_builder.ins().symbol_value(ptr_t, gv_d0);
-            let value_0 = func_builder
+            //            check ro    check rw    update and check rw
+            // start ---> check0 ---> check1 ---> check2  ---> exit
+            //                    |           |            ^
+            //                    |           \------------|
+            //                    \------------------------/
+
+            let block_start = func_builder.create_block();
+            func_builder.append_block_params_for_function_params(block_start);
+
+            let block_check0 = func_builder.create_block();
+            let block_check1 = func_builder.create_block();
+            let block_check2 = func_builder.create_block();
+
+            let block_exit = func_builder.create_block();
+            func_builder.append_block_params_for_function_returns(block_exit);
+
+            // build block_start
+            func_builder.switch_to_block(block_start);
+            func_builder.ins().jump(block_check0, &[]);
+
+            // build block_check0
+            func_builder.switch_to_block(block_check0);
+            let data_ro_addr = func_builder.ins().symbol_value(addr_t, gv_data_ro);
+            let value_ro_0 = func_builder
                 .ins()
-                .load(types::I32, MemFlags::new(), value_0_ptr, 0);
+                .load(types::I32, MemFlags::new(), data_ro_addr, 0);
 
-            func_builder.ins().return_(&[value_0]);
+            let check_result_0 = func_builder.ins().icmp_imm(IntCC::Equal, value_ro_0, 11);
+            let exit_code_imm_1 = func_builder.ins().iconst(types::I32, 1);
 
+            func_builder.ins().brif(
+                check_result_0,
+                block_check1,
+                &[],
+                block_exit,
+                &[exit_code_imm_1],
+            );
+
+            // build block_check1
+            func_builder.switch_to_block(block_check1);
+            let data_rw_addr = func_builder.ins().symbol_value(addr_t, gv_data_rw);
+            let value_rw_0 = func_builder
+                .ins()
+                .load(types::I32, MemFlags::new(), data_rw_addr, 0);
+
+            let check_result_1 = func_builder.ins().icmp_imm(IntCC::Equal, value_rw_0, 13);
+            let exit_code_imm_2 = func_builder.ins().iconst(types::I32, 2);
+
+            func_builder.ins().brif(
+                check_result_1,
+                block_check2,
+                &[],
+                block_exit,
+                &[exit_code_imm_2],
+            );
+
+            // build block_check2
+            func_builder.switch_to_block(block_check2);
+            let value_imm_17 = func_builder.ins().iconst(types::I32, 17);
+            func_builder
+                .ins()
+                .store(MemFlags::new(), value_imm_17, data_rw_addr, 0);
+
+            let value_rw_1 = func_builder
+                .ins()
+                .load(types::I32, MemFlags::new(), data_rw_addr, 0);
+
+            let check_result_2 = func_builder.ins().icmp_imm(IntCC::Equal, value_rw_1, 17);
+            let exit_code_imm_0 = func_builder.ins().iconst(types::I32, 0);
+            let exit_code_imm_3 = func_builder.ins().iconst(types::I32, 3);
+
+            func_builder.ins().brif(
+                check_result_2,
+                block_exit,
+                &[exit_code_imm_0],
+                block_exit,
+                &[exit_code_imm_3],
+            );
+
+            // build block_exit
+            func_builder.switch_to_block(block_exit);
+
+            let exit_code_value = func_builder.block_params(block_exit)[0];
+            func_builder.ins().return_(&[exit_code_value]);
+
+            // all blocks are finish
             func_builder.seal_all_blocks();
             func_builder.finalize();
 
-            // println!("{}", func.display());
+            println!("{}", func.display());
 
             generator.context.func = func;
 
@@ -673,13 +865,16 @@ mod tests {
             generator.module.clear_context(&mut generator.context);
         }
 
-        // linking
-        generator.module.finalize_definitions().unwrap();
-
-        // get function pointers
-        let func_main_ptr = generator.module.get_finalized_function(func_main_id);
-
-        // example of to get data pointer
+        // note:
+        // the flow for JIT module:
+        //
+        // 1.linking
+        // `generator.module.finalize_definitions().unwrap();`
+        //
+        // 2. get function pointers
+        // `let func_main_ptr = generator.module.get_finalized_function(func_main_id);`
+        //
+        // 3. get data pointer
         //
         // ```rust
         // let (buf_ptr, buf_size) = generator.module.get_finalized_data(data_id);
@@ -687,10 +882,19 @@ mod tests {
         // ```
         //
         // note that the pointers of functions and data only available after 'module.finalize_definitions()'
+        //
+        // 4. cast ptr to Rust function
+        // `let func_main: extern "C" fn() -> i32 = unsafe { std::mem::transmute(func_main_ptr) };`
+        //
+        // 5. execute the function:
+        // `assert_eq!(func_main(), 13);`
 
-        // cast ptr to Rust function
-        let func_main: extern "C" fn() -> i32 = unsafe { std::mem::transmute(func_main_ptr) };
+        // finish the module
+        let object_procduct = generator.module.finish();
+        let module_binary = object_procduct.emit().unwrap();
+        let exit_code_opt =
+            run_executable_binary_and_get_exit_code(&module_binary, "anna_unit_test_codegen_data");
 
-        assert_eq!(func_main(), 13);
+        assert_eq!(exit_code_opt, Some(0));
     }
 }

@@ -26,5 +26,6 @@ fi
 # set the shared library search path to the relative path '.' so that the
 # applications can be run directly without setting 'LD_LIBRARY_PATH' or running 'ldconfig'.
 gcc -Wall -g -Wl,-rpath,'$ORIGIN' -o test_threads.elf test_threads.c -L $(pwd) -ltest0
+gcc -Wall -g -Wl,-rpath,'$ORIGIN' -o test_func_addr.elf test_func_addr.c -L $(pwd) -ltest0
 gcc -Wall -g -Wl,-rpath,'$ORIGIN' -o test_import_normal.elf test_import_normal.c -L $(pwd) -ltest0
 gcc -Wall -g -Wl,-rpath,'$ORIGIN' -o test_import_tls.elf test_import_tls.c -L $(pwd) -ltest0
