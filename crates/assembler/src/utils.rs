@@ -116,6 +116,20 @@ impl CodeGenerator<ObjectModule> {
         flag_builder.set("opt_level", "none").unwrap();
         flag_builder.set("preserve_frame_pointers", "true").unwrap();
 
+        // https://docs.rs/cranelift-codegen/latest/cranelift_codegen/settings/struct.Flags.html#method.enable_atomics
+        flag_builder.enable("enable_atomics").unwrap();
+
+        // the target "x86_64-unknown-linux-gnu" does not set "tls_model" by default.
+        //
+        // https://docs.rs/cranelift-codegen/latest/cranelift_codegen/settings/struct.Flags.html#method.tls_model
+        // https://docs.rs/cranelift-codegen/latest/cranelift_codegen/settings/enum.TlsModel.html
+        // possible values:
+        // - none
+        // - elf_gd (ELF)
+        // - macho (Mach-O)
+        // - coff (COFF)
+        flag_builder.set("tls_model", "elf_gd").unwrap();
+
         let isa_builder =
             isa::lookup_by_name("x86_64-unknown-linux-gnu").unwrap_or_else(|lookup_error| {
                 panic!("host machine is not supported: {}", lookup_error);
@@ -1661,8 +1675,7 @@ mod tests {
         assert_eq!(exit_code_opt, Some(0));
     }
 
-    // #[test]
-    #[allow(dead_code)]
+    #[test]
     fn test_utils_import_tls_data() {
         let mut generator = CodeGenerator::new_object_file("main");
 

@@ -4,16 +4,14 @@
 // the Mozilla Public License version 2.0 and additional exceptions,
 // more details in file LICENSE, LICENSE.additional and CONTRIBUTING.
 
-use anna_types::{opcode::Opcode, DataType, MemoryDataType};
+use anna_types::{opcode::Opcode, DataType, MemoryDataType, ModuleShareType};
 
 use crate::{
     ast::{
-        BranchCase, DataKindNode, DataNode, ExternalFunctionNode, ExternalItem, ExternalNode,
-        FunctionNode, InitedData, Instruction, LocalNode, ModuleElementNode, ModuleNode, ParamNode,
-        UninitData,
+        BranchCase, DataKindNode, DataNode, ExternalFunctionNode, ExternalItem, ExternalNode, FunctionNode, ImportDataNode, ImportFunctionNode, ImportItem, ImportModuleNode, ImportNode, InitedData, Instruction, LocalNode, ModuleElementNode, ModuleNode, ParamNode, SimplifiedDataKindNode, UninitData
     },
     lexer::{NumberToken, Token},
-    native_assembly_instruction::{init_instruction_map, InstructionSyntaxKind},
+    native_assembly_instruction::{init_instruction_map, InstructionSyntaxKind, INSTRUCTION_MAP},
     peekable_iterator::PeekableIterator,
     ParseError, NAME_PATH_SEPARATOR,
 };
@@ -2029,13 +2027,11 @@ fn parse_identifier_less_params_node(
     Ok(data_types)
 }
 
-todo:: /////////////////////////
-
 fn parse_import_node(iter: &mut PeekableIterator<Token>) -> Result<ModuleElementNode, ParseError> {
     // (import
     //     (module share "math" "1.0")
     //     (function $add "add" (param i32) (param i32) (result i32))
-    //     (data $msg "msg" (read_only i32))
+    //     (data $msg "msg" i32)
     //     ) ...  //
     // ^     ^____// to here
     // |__________// current token
@@ -2156,13 +2152,13 @@ fn parse_import_function_node(
 }
 
 fn parse_import_data_node(iter: &mut PeekableIterator<Token>) -> Result<ImportItem, ParseError> {
-    // (data $sum "sum" (read_write i32)) ...  //
-    // ^                                  ^____// to here
-    // |_______________________________________// current token
+    // (data $sum "sum" i32) ...  //
+    // ^                     ^____// to here
+    // |__________________________// current token
 
     // also
-    // (data $msg "msg" i32)
     // (data $sum "sum" i64 writable)
+    // (data $num "num" i32 writable tls)
     // (data $buf "utils::buf" bytes)
 
     consume_left_paren(iter, "import.data)")?;
