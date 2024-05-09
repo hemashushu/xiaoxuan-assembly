@@ -527,14 +527,19 @@ mod tests {
     fn get_userlib_path() -> String {
         let mut pwd = std::env::current_dir().unwrap();
 
-        if !pwd.ends_with("assembler") {
+        // let pkg_name = env!("CARGO_PKG_NAME");       // the name of package that is written within the file 'Cargo.toml'
+        // let crate_name = env!("CARGO_CRATE_NAME");  // the name of package which is convert '-' to '_'.
+        // ref:
+        // https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-crates
+        let crate_dir_name = env!("CARGO_MANIFEST_DIR");
+        if !pwd.ends_with(crate_dir_name) {
             // in the VSCode editor `Debug` environment, the `current_dir()` returns
             // the project's root folder.
             // while in both `$ cargo test` and VSCode editor `Run Test` environment,
             // the `current_dir()` returns the current crate path.
             // here canonicalize the test resources path.
             pwd.push("crates");
-            pwd.push("assembler");
+            pwd.push(crate_dir_name);
         }
 
         pwd.push("tests");
@@ -580,7 +585,7 @@ mod tests {
         let user_lib_soname = "test0";
         let exec_file_path = get_temp_file_path(&format!("{}.elf", name));
 
-        println!("============ {}", user_lib_path);
+        println!("user lib path: {}", user_lib_path);
 
         link_object_file(
             &object_file_path,
@@ -606,6 +611,32 @@ mod tests {
 
     #[test]
     fn test_utils_function_call() {
+        /*
+        function u0:1() -> i32 system_v {
+            sig0 = (i32, i32) -> i32, i32 system_v
+            fn0 = colocated u0:0 sig0
+
+        block0:
+            v1 = iconst.i32 11
+            v2 = iconst.i32 13
+            v3, v4 = call fn0(v1, v2)  ; v1 = 11, v2 = 13
+            jump block1
+
+        block1:
+            v5 = icmp_imm.i32 eq v3, 13
+            v6 = iconst.i32 1
+            brif v5, block2, block3(v6)  ; v6 = 1
+
+        block2:
+            v7 = icmp_imm.i32 eq v4, 11
+            v8 = iconst.i32 2
+            v9 = iconst.i32 0
+            brif v7, block3(v9), block3(v8)  ; v9 = 0, v8 = 2
+
+        block3(v0: i32):
+            return v0
+        }
+         */
         let mut generator = CodeGenerator::new_object_file("main");
 
         let mut sig_swap = generator.module.make_signature();
@@ -697,7 +728,8 @@ mod tests {
             // build block_start
             func_builder.switch_to_block(block_start);
 
-            // call swap(11, 13) -> (13, 11)
+            // call swap(11, 13)
+            // results == (13, 11)
             let value_0 = func_builder.ins().iconst(types::I32, 11);
             let value_1 = func_builder.ins().iconst(types::I32, 13);
 
@@ -706,6 +738,7 @@ mod tests {
             func_builder.ins().jump(block_check0, &[]);
 
             // build block_check0
+            // assert results[0] == 13
             func_builder.switch_to_block(block_check0);
 
             // check results 1/2
@@ -726,6 +759,7 @@ mod tests {
             func_builder.switch_to_block(block_check1);
 
             // check results 2/2
+            // assert results[1] == 11
             let check_result_1 = func_builder
                 .ins()
                 .icmp_imm(IntCC::Equal, call0_results[1], 11);
@@ -750,7 +784,7 @@ mod tests {
             func_builder.seal_all_blocks();
             func_builder.finalize();
 
-            // println!("{}", func.display());
+            println!("{}", func.display());
 
             // generate the function code
 
@@ -777,6 +811,41 @@ mod tests {
 
     #[test]
     fn test_utils_data() {
+        /*
+        function u0:0() -> i32 system_v {
+            gv0 = symbol colocated userextname0
+            gv1 = symbol colocated userextname1
+
+        block0:
+            jump block1
+
+        block1:
+            v1 = symbol_value.i64 gv0
+            v2 = load.i32 v1
+            v3 = icmp_imm eq v2, 11
+            v4 = iconst.i32 1
+            brif v3, block2, block4(v4)  ; v4 = 1
+
+        block2:
+            v5 = symbol_value.i64 gv1
+            v6 = load.i32 v5
+            v7 = icmp_imm eq v6, 13
+            v8 = iconst.i32 2
+            brif v7, block3, block4(v8)  ; v8 = 2
+
+        block3:
+            v9 = iconst.i32 17
+            store v9, v5  ; v9 = 17
+            v10 = load.i32 v5
+            v11 = icmp_imm eq v10, 17
+            v12 = iconst.i32 0
+            v13 = iconst.i32 3
+            brif v11, block4(v12), block4(v13)  ; v12 = 0, v13 = 3
+
+        block4(v0: i32):
+            return v0
+        }
+         */
         let mut generator = CodeGenerator::new_object_file("main");
 
         let addr_t: Type = generator.module.isa().pointer_type();
@@ -839,6 +908,7 @@ mod tests {
             func_builder.ins().jump(block_check0, &[]);
 
             // build block_check0
+            // assert data0 == 11
             func_builder.switch_to_block(block_check0);
             let data_ro_addr = func_builder.ins().symbol_value(addr_t, gv_data_ro);
             let value_ro_0 = func_builder
@@ -857,6 +927,7 @@ mod tests {
             );
 
             // build block_check1
+            // assert data1 == 13
             func_builder.switch_to_block(block_check1);
             let data_rw_addr = func_builder.ins().symbol_value(addr_t, gv_data_rw);
             let value_rw_0 = func_builder
@@ -875,6 +946,7 @@ mod tests {
             );
 
             // build block_check2
+            // write 17 to data1, and read and assert it is 17
             func_builder.switch_to_block(block_check2);
             let value_imm_17 = func_builder.ins().iconst(types::I32, 17);
             func_builder
@@ -907,7 +979,7 @@ mod tests {
             func_builder.seal_all_blocks();
             func_builder.finalize();
 
-            // println!("{}", func.display());
+            println!("{}", func.display());
 
             generator.context.func = func;
 
@@ -955,6 +1027,42 @@ mod tests {
     #[test]
     fn test_utils_local_variable() {
         // 'local variable' = 'data that allocated on the stack'
+
+        /*
+        function u0:0() -> i32 system_v {
+            ss0 = explicit_slot 4
+
+        block0:
+            jump block1
+
+        block1:
+            v1 = iconst.i32 11
+            stack_store v1, ss0  ; v1 = 11
+            v2 = stack_load.i32 ss0
+            v3 = icmp_imm eq v2, 11
+            v4 = iconst.i32 1
+            brif v3, block2, block4(v4)  ; v4 = 1
+
+        block2:
+            v5 = stack_addr.i64 ss0
+            v6 = load.i32 v5
+            v7 = icmp_imm eq v6, 11
+            v8 = iconst.i32 2
+            brif v7, block3, block4(v8)  ; v8 = 2
+
+        block3:
+            v9 = iconst.i32 17
+            store v9, v5  ; v9 = 17
+            v10 = stack_load.i32 ss0
+            v11 = icmp_imm eq v10, 17
+            v12 = iconst.i32 0
+            v13 = iconst.i32 3
+            brif v11, block4(v12), block4(v13)  ; v12 = 0, v13 = 3
+
+        block4(v0: i32):
+            return v0
+        }
+         */
 
         let mut generator = CodeGenerator::new_object_file("main");
 
@@ -1073,7 +1181,7 @@ mod tests {
             func_builder.seal_all_blocks();
             func_builder.finalize();
 
-            // println!("{}", func.display());
+            println!("{}", func.display());
 
             generator.context.func = func;
 
@@ -1098,6 +1206,29 @@ mod tests {
 
     #[test]
     fn test_utils_control_flow() {
+        /*
+        function u0:0() -> i32 system_v {
+        block0:
+            v4 = iconst.i32 0
+            v5 = iconst.i32 10
+            jump block1(v4, v5)  ; v4 = 0, v5 = 10
+
+        block1(v0: i32, v1: i32):
+            v6 = iadd v0, v1
+            v7 = iadd_imm v1, -1
+            v8 = icmp_imm eq v7, 0
+            brif v8, block2(v6), block1(v6, v7)
+
+        block2(v2: i32):
+            v9 = icmp_imm eq v2, 55
+            v10 = iconst.i32 0
+            v11 = iconst.i32 1
+            brif v9, block3(v10), block3(v11)  ; v10 = 0, v11 = 1
+
+        block3(v3: i32):
+            return v3
+        }
+         */
         let mut generator = CodeGenerator::new_object_file("main");
 
         // define function
@@ -1201,7 +1332,7 @@ mod tests {
             func_builder.seal_all_blocks();
             func_builder.finalize();
 
-            // println!("{}", func.display());
+            println!("{}", func.display());
 
             generator.context.func = func;
 
@@ -1226,6 +1357,24 @@ mod tests {
 
     #[test]
     fn test_utils_import_function() {
+        /*
+        function u0:1() -> i32 system_v {
+            sig0 = (i32, i32) -> i32 system_v
+            fn0 = u0:0 sig0
+
+        block0:
+            v1 = iconst.i32 11
+            v2 = iconst.i32 13
+            v3 = call fn0(v1, v2)  ; v1 = 11, v2 = 13
+            v4 = icmp_imm eq v3, 24
+            v5 = iconst.i32 0
+            v6 = iconst.i32 1
+            brif v4, block1(v5), block1(v6)  ; v5 = 0, v6 = 1
+
+        block1(v0: i32):
+            return v0
+        }
+         */
         let mut generator = CodeGenerator::new_object_file("main");
 
         // import function 'add'
@@ -1308,7 +1457,7 @@ mod tests {
             func_builder.seal_all_blocks();
             func_builder.finalize();
 
-            // println!("{}", func.display());
+            println!("{}", func.display());
 
             generator.context.func = func;
 
@@ -1333,6 +1482,31 @@ mod tests {
 
     #[test]
     fn test_utils_indirect_function_call() {
+        /*
+        the target function is obtained dynamically by
+        function address.
+         */
+
+        /*
+        function u0:1() -> i32 system_v {
+            sig0 = () -> i64 system_v
+            sig1 = (i32, i32) -> i32 system_v
+            fn0 = u0:0 sig0
+
+        block0:
+            v1 = call fn0()
+            v2 = iconst.i32 11
+            v3 = iconst.i32 13
+            v4 = call_indirect sig1, v1(v2, v3)  ; v2 = 11, v3 = 13
+            v5 = icmp_imm eq v4, 24
+            v6 = iconst.i32 0
+            v7 = iconst.i32 1
+            brif v5, block1(v6), block1(v7)  ; v6 = 0, v7 = 1
+
+        block1(v0: i32):
+            return v0
+        }
+         */
         let mut generator = CodeGenerator::new_object_file("main");
 
         let addr_t: Type = generator.module.isa().pointer_type();
@@ -1425,7 +1599,7 @@ mod tests {
             func_builder.seal_all_blocks();
             func_builder.finalize();
 
-            // println!("{}", func.display());
+            println!("{}", func.display());
 
             generator.context.func = func;
 
@@ -1450,6 +1624,63 @@ mod tests {
 
     #[test]
     fn test_utils_import_data() {
+        /*
+        function u0:2() -> i32 system_v {
+            gv0 = symbol userextname2       ;; normal_var
+            sig0 = (i32) system_v
+            sig1 = () -> i32 system_v
+            fn0 = u0:0 sig0                 ;; inc_normal
+            fn1 = u0:1 sig1                 ;; get_normal_var
+
+        block0:
+            jump block1
+
+        block1:
+            v1 = global_value.i64 gv0
+            v2 = load.i32 v1
+            v3 = iconst.i32 1
+            v4 = icmp_imm eq v2, 0
+            brif v4, block2, block7(v3)  ; v3 = 1
+
+        block2:
+            v5 = call fn1()
+            v6 = iconst.i32 2
+            v7 = icmp_imm eq v5, 0
+            brif v7, block3, block7(v6)  ; v6 = 2
+
+        block3:
+            v8 = iconst.i32 11
+            call fn0(v8)  ; v8 = 11
+            v9 = load.i32 v1
+            v10 = iconst.i32 3
+            v11 = icmp_imm eq v9, 11
+            brif v11, block4, block7(v10)  ; v10 = 3
+
+        block4:
+            v12 = call fn1()
+            v13 = iconst.i32 4
+            v14 = icmp_imm eq v12, 11
+            brif v14, block5, block7(v13)  ; v13 = 4
+
+        block5:
+            v15 = iconst.i32 13
+            store v15, v1  ; v15 = 13
+            v16 = load.i32 v1
+            v17 = iconst.i32 5
+            v18 = icmp_imm eq v16, 13
+            brif v18, block6, block7(v17)  ; v17 = 5
+
+        block6:
+            v19 = call fn1()
+            v20 = iconst.i32 0
+            v21 = iconst.i32 6
+            v22 = icmp_imm eq v19, 13
+            brif v22, block7(v20), block7(v21)  ; v20 = 0, v21 = 6
+
+        block7(v0: i32):
+            return v0
+        }
+         */
         let mut generator = CodeGenerator::new_object_file("main");
 
         let addr_t: Type = generator.module.isa().pointer_type();
@@ -1652,7 +1883,7 @@ mod tests {
             func_builder.seal_all_blocks();
             func_builder.finalize();
 
-            // println!("{}", func.display());
+            println!("{}", func.display());
 
             generator.context.func = func;
 
@@ -1677,6 +1908,64 @@ mod tests {
 
     #[test]
     fn test_utils_import_tls_data() {
+        /*
+        function u0:2() -> i32 system_v {
+            gv0 = symbol tls userextname2       ;; tls_var
+            sig0 = (i32) system_v
+            sig1 = () -> i32 system_v
+            fn0 = u0:0 sig0                     ;; inc_tls
+            fn1 = u0:1 sig1                     ;; get_tls_var
+
+        block0:
+            jump block1
+
+        block1:
+            v1 = tls_value.i64 gv0
+            v2 = load.i32 v1
+            v3 = iconst.i32 1
+            v4 = icmp_imm eq v2, 0
+            brif v4, block2, block7(v3)  ; v3 = 1
+
+        block2:
+            v5 = call fn1()
+            v6 = iconst.i32 2
+            v7 = icmp_imm eq v5, 0
+            brif v7, block3, block7(v6)  ; v6 = 2
+
+        block3:
+            v8 = iconst.i32 11
+            call fn0(v8)  ; v8 = 11
+            v9 = load.i32 v1
+            v10 = iconst.i32 3
+            v11 = icmp_imm eq v9, 0
+            brif v11, block4, block7(v10)  ; v10 = 3
+
+        block4:
+            v12 = call fn1()
+            v13 = iconst.i32 4
+            v14 = icmp_imm eq v12, 0
+            brif v14, block5, block7(v13)  ; v13 = 4
+
+        block5:
+            v15 = iconst.i32 13
+            store v15, v1  ; v15 = 13
+            v16 = load.i32 v1
+            v17 = iconst.i32 5
+            v18 = icmp_imm eq v16, 13
+            brif v18, block6, block7(v17)  ; v17 = 5
+
+        block6:
+            v19 = call fn1()
+            v20 = iconst.i32 0
+            v21 = iconst.i32 6
+            v22 = icmp_imm eq v19, 13
+            brif v22, block7(v20), block7(v21)  ; v20 = 0, v21 = 6
+
+        block7(v0: i32):
+            return v0
+        }
+         */
+
         let mut generator = CodeGenerator::new_object_file("main");
 
         let addr_t: Type = generator.module.isa().pointer_type();
