@@ -1,6 +1,6 @@
-# XiaoXuan Native Assembly
+# XiaoXuan Assembly
 
 A modern assembler with built-in debugging and unit testing capabilities, ideal for both project compilation and educational purposes. Supports architectures including x86-64, aarch64, riscv64, and loongarch64.
 
-_"ANNS" stands for "XiaoXuan Native Assembly"_
+_"ANASM" stands for "XiaoXuan Assembly"_
 
