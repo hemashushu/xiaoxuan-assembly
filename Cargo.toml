@@ -1,8 +1,11 @@
 [workspace]
+
 members = [
-    "crates/types",
-    "crates/parser",
-    "crates/assembler",
+    # "crates/types",
+    # "crates/parser",
+    # "crates/assembler",
+    "crates/encoding-x86-64",
 ]
 
-resolver = "2"
+resolver = "3"
+
