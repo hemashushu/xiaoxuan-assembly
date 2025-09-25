@@ -4,7 +4,7 @@ members = [
     # "crates/types",
     # "crates/parser",
     # "crates/assembler",
-    "crates/encoding-x86-64",
+    "crates/encoder-x86-64",
 ]
 
 resolver = "3"

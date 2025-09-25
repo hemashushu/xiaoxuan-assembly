@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "anna_encooding_x86_64"
+name = "anna_encooder_x86_64"
 version = "0.1.0"
