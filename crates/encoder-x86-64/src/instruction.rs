@@ -67,74 +67,27 @@ pub enum Register {
      * AH, BH, CH and DH are conflicted with REX prefix in long mode, they are
      * not allowed since ANASM is intented for developing modern x86-64 applications.
      *
-     * Background
-     * ==========
+     * ## the REX prefix
      *
-     * ## 1. What is the REX prefix?
+     * - The upper 4 bits are fixed `0100`.
+     * - The lower 4 bits are flags:
      *
-     * * In x86 machine code, instructions can be preceded by *prefix bytes* that modify
-     *   their behavior (e.g. operand size, segment overrides).
-     * * For **x86-64**, AMD introduced a new kind of prefix called **REX**,
-     *   which is a **1-byte prefix in the range `0x40–0x4F`**.
-     * * It extends the instruction encoding to allow:
+     * | Bit  | Name | Effect                                                  |
+     * | ---  | ---- |-------------------------------------------------------- |
+     * | 1000 | W    | Use 64-bit operand size (instead of default 32-bit)     |
+     * | 0100 | R    | Extends the reg field of ModR/M (adds 8 more registers) |
+     * | 0010 | X    | Extends the index field of SIB (adds 8 more registers)  |
+     * | 0001 | B    | Extends the r/m field of ModR/M, or base field of SIB   |
      *
-     *   1. **Access to new registers** (`R8–R15`)
-     *   2. **Access to the high 64-bit register halves** (64-bit operand size)
-     *   3. **Access to 64-bit addressing** with new registers as base/index.
+     * Note: REX.W does not imply extending the registers, it only changes the operand size to 64-bit.
      *
-     * ## 2. REX prefix format
+     * ## conflict with AH/BH/CH/DH
      *
-     * It’s one byte:
-     *
-     * ```
-     * 0100WRXB
-     * ```
-     *
-     * * The upper 4 bits are fixed `0100`.
-     * * The lower 4 bits are flags:
-     *
-     * | Bit | Name                                                        | Effect |
-     * | --- | ----------------------------------------------------------- | ------ |
-     * | W   | 1 = use 64-bit operand size (instead of default 32-bit)     |        |
-     * | R   | Extends the **reg field** of ModR/M (adds 8 more registers) |        |
-     * | X   | Extends the **index field** of SIB (adds 8 more registers)  |        |
-     * | B   | Extends the **r/m field** of ModR/M or base field of SIB    |        |
-     *
-     * So with REX, you can address registers `R8–R15` and also set 64-bit operand sizes.
-     *
-     * ## 3. Example
-     *
-     * Without REX:
-     *
-     * ```asm
-     * mov eax, ebx   ; 32-bit move
-     * ```
-     *
-     * Machine code: `89 D8`
-     *
-     * With REX.W=1 (0x48):
-     *
-     * ```asm
-     * mov rax, rbx   ; 64-bit move
-     * ```
-     *
-     * Machine code: `48 89 D8`
-     *
-     * With REX.B=1:
-     *
-     * ```asm
-     * mov rax, r8    ; uses extended register
-     * ```
-     *
-     * Machine code: `4C 89 C0`
-     *
-     * ## 4. Why does it conflict with AH/BH/CH/DH?
-     *
-     * * Historically, x86 had 8-bit registers `AL, CL, DL, BL, AH, CH, DH, BH`.
-     * * When x86-64 added new low-byte registers (`SPL, BPL, SIL, DIL, R8B–R15B`), they reused the same opcode space.
-     * * To distinguish them, you must use a REX prefix.
-     * * But if a REX prefix is present, the AH/BH/CH/DH encodings are no longer valid.
-     *   This is why assemblers disallow mixing REX with AH/BH/CH/DH.
+     * Historically, x86 had 8-bit registers `AL, CL, DL, BL, AH, CH, DH, BH`.
+     * When x86-64 added new low-byte registers (`SPL, BPL, SIL, DIL, R8B–R15B`), they reused the same opcode space.
+     * To distinguish them, you must use a REX prefix.
+     * But if a REX prefix is present, the AH/BH/CH/DH encodings are no longer valid.
+     * This is why assemblers disallow mixing REX with AH/BH/CH/DH.
      *
      * Summary:
      *
@@ -145,8 +98,7 @@ pub enum Register {
      *   except when you’re working with 8-bit registers, because it changes the
      *   available set (removes AH/BH/CH/DH, introduces SPL/BPL/SIL/DIL).
      *
-     * Other prefixes
-     * ==============
+     * ## Other prefixes
      *
      * | Prefix type       | Bytes                  | Still valid in long mode? | Notes                                |
      * | ----------------- | ---------------------- | ------------------------- | ------------------------------------ |
@@ -159,18 +111,19 @@ pub enum Register {
      * | EVEX              | 62                     | Yes                       | AVX-512                              |
      * | XOP (AMD)         | 8F                     | Partially                 | Rare, non-Intel                      |
      *
+     * - Operand-size override `66`
+     *   switches between 16-bit and 32/64-bit operand size.
+     *   In long mode, default operand size = 32 bits;
+     *   adding 66 makes it 16-bit ops.
+     *   adding REX.W makes it 64-bit (even with 66).
      *
-     * - Operand-size override
-     *   66: switches between 16-bit and 32/64-bit operand size.
-     *   In long mode, default operand size = 32 bits; adding REX.W makes it 64.
-     *   So 66 is still used for 16-bit ops.
-     *
-     * - Address-size override
-     *   67: switches between 64-bit addressing and 32-bit (or 16-bit) addressing.
+     * - Address-size override `67`
+     *   switches between 64-bit addressing and 32-bit (or 16-bit) addressing.
      *   In long mode, default addressing = 64 bits;
-     *   with 67 you can do 32-bit addressing.
+     *   with 67 you can do 32-bit addressing. 16-bit addressing is not supported in long mode.
+     *   Note: ANASM does not support 32-bit addressing, so `67` is never used.
      *
-     * Volume 1 Table 3-4. Effective Operand- and Address-Size Attributes in 64-Bit Mode
+     * ## Mixing REX, 66 and 67 prefixes
      *
      * REX.W Prefix            |  0  0  0  0  1  1  1  1
      * Operand-Size Prefix 66H |  N  N  Y  Y  N  N  Y  Y
@@ -178,7 +131,9 @@ pub enum Register {
      * Effective Operand Size  | 32 32 16 16 64 64 64 64
      * Effective Address Size  | 64 32 64 32 64 32 64 32
      *
-     * See: Volume 1, Section 3.6.1 Operand Size and Address Size in 64-Bit Mode
+     * References:
+     * - Volume 1 Table 3-4. Effective Operand- and Address-Size Attributes in 64-Bit Mode
+     * - Volume 1, Section 3.6.1 Operand Size and Address Size in 64-Bit Mode
      *
      * */
     RAX, EAX, AX, AL, /* alias R0, (REX.R/B, ModRM.reg/rm) = 0,0 */
@@ -213,11 +168,12 @@ pub enum Register {
     XMM13, YMM13, ZMM13, /* (REX.R/B, ModRM.reg/rm) = 1.5 */
     XMM14, YMM14, ZMM14, /* (REX.R/B, ModRM.reg/rm) = 1.6 */
     XMM15, YMM15, ZMM15, /* (REX.R/B, ModRM.reg/rm) = 1.7 */
-    RIP, EIP, IP,
-    RFLAGS, EFLAGS, FLAGS,
+
+    RIP, // avaiable in `lea`` instruction
+
 
     // TLS segment in Windows x86-64,
-    // e.g. `mov rax, qword [gs:0x28]`.
+    // e.g. `mov rax, qword gs:[0x28]`.
     // writing GS has no effect,
     // GS.base is set up by the OS for thread-local storage (TLS)
     // and can be changed only with syscall `arch_prctl`
@@ -303,7 +259,7 @@ pub enum OperandSize {
 // bitflags! {
 #[repr(u8)]
 #[derive(Debug, PartialEq, Clone)]
-pub enum REW {
+pub enum REX {
     // Operand size extension
     // 1 = 64-bit operand size (REX.W)
     // 0 = default operand size (32-bit, or 16-bit with 0x66 prefix)
@@ -311,22 +267,23 @@ pub enum REW {
 
     // ModRM.reg Register extension
     // 1 = extends ModRM.reg field (REX.R)
-    //     Extends the reg field of the ModR/M byte with an extra high bit.
-    //     Allows access to registers r8–r15.
+    //     - Extends the reg field of the ModR/M byte with an extra high bit.
+    //     - Allows access to registers r8–r15.
     // 0 = no extension
     R = 0b0000_0100,
 
     // SIB index extension
     // 1 = extends SIB.index field (REX.X)
-    //     Extends the index field of the SIB byte.
-    //     Allows index registers r8–r15.
+    //     - Extends the index field of the SIB byte.
+    //     - Allows index registers r8–r15.
     // 0 = no extension
     X = 0b0000_0010,
 
     // ModRM.r/m Register extension or SIB Base extension
     // 1 = extends ModRM.r/m field or SIB base field (REX.B)
-    //     Extends the r/m field of the ModR/M byte or the base field of the SIB byte.
-    //     Allows access to registers r8–r15.
+    //     - Extends the r/m field of the ModR/M byte.
+    //     - Extends the base field of the SIB byte.
+    //     - Allows access to registers r8–r15.
     // 0 = no extension
     B = 0b0000_0001,
 }
